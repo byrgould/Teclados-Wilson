@@ -175,9 +175,9 @@ const HexGrid = {
           const currentCount = HexGrid.activeNotesMap.get(activeNoteKey) || 0;
           
           if (currentCount === 0) {
-            if (typeof window.dispatchOSC === 'function') {
-              window.dispatchOSC('/mnote', 'ff', [activeNoteFloat, 127.0]);
-            }
+            // if (typeof window.dispatchOSC === 'function') {
+            //   window.dispatchOSC('/mnote', 'ff', [activeNoteFloat, 127.0]);
+            // }
             if (typeof window.dispatchMIDI === 'function') {
               const userBase = parseInt(window.userBaseMidiNote !== undefined ? window.userBaseMidiNote : 60, 10);
               const pureDegree = parseFloat(hex.noteDegree) + (parseInt(hex.noteOctave || 0) * edo);
@@ -226,9 +226,9 @@ const HexGrid = {
             HexGrid.activeNotesMap.set(activeNoteKey, newCount);
             
             if (newCount === 0) {
-              if (typeof window.dispatchOSC === 'function') {
-                window.dispatchOSC('/mnote', 'ff', [activeNoteFloat, 0.0]);
-              }
+              // if (typeof window.dispatchOSC === 'function') {
+              //   window.dispatchOSC('/mnote', 'ff', [activeNoteFloat, 0.0]);
+              // }
               if (typeof window.dispatchMIDI === 'function') {
                 const edo = typeof window.getActiveEdo === 'function' ? window.getActiveEdo() : 12;
                 const base = typeof window.getOscBaseFloat === 'function' ? window.getOscBaseFloat() : 0.0;
