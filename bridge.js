@@ -18,8 +18,11 @@ const path = require('path');
 const os = require('os');
 
 // --- Configuración ---
-const HTTP_PORT = 3000;
-const WS_PORT = 8081;
+const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 3000;
+const WS_PORT = parseInt(process.env.WS_PORT, 10) || 8081;
+const WS_MAX_PAYLOAD = 65536; // 64 KB max
+const RATE_LIMIT_WINDOW_MS = 1000;
+const RATE_LIMIT_MAX_MESSAGES = 600; // Máximo 600 eventos/segundo por cliente (suficiente para glissandi intensos)
 
 // --- Utilidad para obtener la IP local ---
 function getLocalIP() {
@@ -36,12 +39,60 @@ function getLocalIP() {
 
 const LOCAL_IP = getLocalIP();
 
+// Validación de Origen WebSocket (Protección CSWSH)
+function isAllowedOrigin(origin) {
+    if (!origin) return true; // Clientes locales nativos o herramientas sin encabezado Origin
+    try {
+        const parsed = new URL(origin);
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === LOCAL_IP.toLowerCase()) {
+            return true;
+        }
+        return false;
+    } catch {
+        return false;
+    }
+}
+
 // --- Servidor HTTP (Para que el iPad pueda cargar el teclado) ---
 const ROOT_DIR = path.resolve(__dirname);
 
 const server = http.createServer((req, res) => {
+    // Restringir a métodos de lectura seguros
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Allow': 'GET, HEAD',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end('Method Not Allowed');
+        return;
+    }
+
     // Sanitizar y prevenir Path Traversal
-    const safeUrlPath = path.normalize(decodeURIComponent(req.url.split('?')[0]));
+    const rawUrl = req.url.split('?')[0];
+    let decodedUrl;
+    try {
+        decodedUrl = decodeURIComponent(rawUrl);
+    } catch {
+        res.writeHead(400, { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end('Bad Request: Invalid URL encoding');
+        return;
+    }
+
+    if (decodedUrl.includes('\0')) {
+        res.writeHead(400, { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end('Bad Request: Null byte detected');
+        return;
+    }
+
+    const safeUrlPath = path.normalize(decodedUrl);
     let relativePath = safeUrlPath === '/' ? 'index.html' : safeUrlPath.replace(/^(\.\.[\/\\])+/, '');
     if (relativePath.startsWith('/') || relativePath.startsWith('\\')) {
         relativePath = relativePath.slice(1);
@@ -52,7 +103,10 @@ const server = http.createServer((req, res) => {
 
     // Verificar contención estricta dentro del directorio raíz del proyecto
     if (!resolvedPath.startsWith(ROOT_DIR + path.sep) && resolvedPath !== ROOT_DIR) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.writeHead(403, { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-Content-Type-Options': 'nosniff'
+        });
         res.end('Forbidden');
         return;
     }
@@ -70,19 +124,43 @@ const server = http.createServer((req, res) => {
     };
 
     const contentType = mimeTypes[extname] || 'application/octet-stream';
+    const securityHeaders = {
+        'Content-Type': contentType,
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'SAMEORIGIN'
+    };
+
+    if (req.method === 'HEAD') {
+        fs.stat(resolvedPath, (error, stats) => {
+            if (error || !stats.isFile()) {
+                res.writeHead(error && error.code === 'ENOENT' ? 404 : 500, securityHeaders);
+                res.end();
+            } else {
+                res.writeHead(200, { ...securityHeaders, 'Content-Length': stats.size });
+                res.end();
+            }
+        });
+        return;
+    }
 
     fs.readFile(resolvedPath, (error, content) => {
         if (error) {
             if (error.code === 'ENOENT' || error.code === 'EISDIR') {
-                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.writeHead(404, { 
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'X-Content-Type-Options': 'nosniff'
+                });
                 res.end('File not found');
             } else {
                 console.error('[HTTP ERROR]', error.code, resolvedPath);
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                res.writeHead(500, { 
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'X-Content-Type-Options': 'nosniff'
+                });
                 res.end('Internal Server Error');
             }
         } else {
-            res.writeHead(200, { 'Content-Type': contentType });
+            res.writeHead(200, securityHeaders);
             res.end(content);
         }
     });
@@ -129,12 +207,46 @@ function isAllowedUdpHost(ip) {
 }
 
 // --- Servidor WebSocket (El teclado se conecta aquí) ---
-const wss = new WebSocket.Server({ port: WS_PORT });
+const wss = new WebSocket.Server({ 
+    port: WS_PORT,
+    maxPayload: WS_MAX_PAYLOAD,
+    verifyClient: (info, callback) => {
+        const origin = info.origin || info.req.headers.origin;
+        if (!isAllowedOrigin(origin)) {
+            console.warn(`[SECURITY BLOCKED] Conexión WebSocket rechazada desde Origin no autorizado: ${origin}`);
+            callback(false, 403, 'Forbidden Origin');
+            return;
+        }
+        callback(true);
+    }
+});
 
 wss.on('connection', (ws) => {
     console.log('[BRIDGE] Teclado vinculado.');
+    
+    // Heartbeat state
+    ws.isAlive = true;
+    ws.on('pong', () => {
+        ws.isAlive = true;
+    });
+
+    // Rate Limiting por cliente
+    let messageCount = 0;
+    let windowStart = Date.now();
 
     ws.on('message', (data) => {
+        // Control de tasa de mensajes
+        const now = Date.now();
+        if (now - windowStart > RATE_LIMIT_WINDOW_MS) {
+            windowStart = now;
+            messageCount = 0;
+        }
+        messageCount++;
+        if (messageCount > RATE_LIMIT_MAX_MESSAGES) {
+            console.warn('[SECURITY] Rate limit excedido para cliente WebSocket. Mensaje descartado.');
+            return;
+        }
+
         try {
             const msg = JSON.parse(data);
             
@@ -183,8 +295,34 @@ wss.on('connection', (ws) => {
     });
 });
 
-udpClient.on('error', (err) => {
-    console.error(`[UDP ERROR] ${err.message}`);
-    // Do not close the socket on transient errors — the bridge stays alive
+// Intervalo de Heartbeat para purgar conexiones WebSocket zombis/muertas
+const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            console.log('[BRIDGE] Terminando cliente WebSocket zombi inactivo.');
+            return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 30000);
+
+wss.on('close', () => {
+    clearInterval(heartbeatInterval);
 });
+
+// Exportar componentes para pruebas unitarias deterministas
+module.exports = {
+    server,
+    wss,
+    udpClient,
+    isAllowedUdpHost,
+    isAllowedOrigin,
+    getLocalIP,
+    HTTP_PORT,
+    WS_PORT,
+    WS_MAX_PAYLOAD,
+    RATE_LIMIT_MAX_MESSAGES
+};
+
 

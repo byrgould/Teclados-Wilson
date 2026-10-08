@@ -156,6 +156,7 @@ const HexGrid = {
       const turnOn = () => {
         if (isPressed) return;
         isPressed = true;
+        hex.isPressed = true;
         polygon.setAttribute('fill', HexGrid.config.activeColor);
         console.log(`[HexGrid] Note ON -> id: ${hex.id}, col: ${col}, row: ${row}, index: ${hex.index}`);
         
@@ -203,6 +204,7 @@ const HexGrid = {
       const turnOff = () => {
         if (!isPressed) return;
         isPressed = false;
+        hex.isPressed = false;
         
         if (hex.isHighlighted) {
           polygon.setAttribute('fill', 'rgba(255, 234, 0, 0.4)');
@@ -255,6 +257,9 @@ const HexGrid = {
 
         // TODO: Enviar dato de apagado
       };
+
+      hex.turnOn = turnOn;
+      hex.turnOff = turnOff;
 
       // Mouse Events
       polygon.addEventListener('mousedown', (e) => {
@@ -741,74 +746,133 @@ const HexGrid = {
   onHexClickCallback: null,
   onHexClick(callback) {
     this.onHexClickCallback = callback;
+  },
+
+  // 9. All Notes Panic & Lifecycle Management
+  // Libera todas las teclas encendidas tanto visualmente como disparando Note OFF / Panic
+  releaseAllNotes() {
+    this.hexagons.forEach(hex => {
+      if (hex.isPressed && typeof hex.turnOff === 'function') {
+        hex.turnOff();
+      }
+    });
+    this.activeNotesMap.clear();
+
+    if (typeof window !== 'undefined') {
+      if (typeof window.dispatchOSC === 'function') {
+        window.dispatchOSC('/allnotesoff', '', []);
+      }
+      if (typeof window.dispatchMIDI === 'function') {
+        // Enviar Control Change 123 (All Notes Off) en canal 1 por defecto
+        window.dispatchMIDI('controlchange', 123, 0);
+      }
+    }
+  },
+
+  // 10. Page Visibility Lifecycle Listener
+  // Pausa segura y corte de notas colgadas cuando Safari/Chrome pasa a segundo plano o se bloquea la pantalla
+  initVisibilityHandler(targetDoc = (typeof document !== 'undefined' ? document : null), targetWin = (typeof window !== 'undefined' ? window : null)) {
+    if (!targetDoc || this._boundDoc === targetDoc) return;
+    this._boundDoc = targetDoc;
+    
+    targetDoc.addEventListener('visibilitychange', () => {
+      if (targetDoc.hidden) {
+        console.log('[HexGrid Lifecycle] Page hidden/minimized: Disparando All Notes Off');
+        this.releaseAllNotes();
+      }
+    });
+
+    if (targetWin) {
+      targetWin.addEventListener('blur', () => {
+        console.log('[HexGrid Lifecycle] Window blur: Asegurando liberación de notas activas');
+        this.releaseAllNotes();
+      });
+    }
   }
 };
+
+// Auto-inicializar ciclo de vida si corre en entorno de navegador
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  HexGrid.initVisibilityHandler();
+}
 
 export default HexGrid;
 
 // ==========================================
 // MIDI CONFIGURATION & UI INJECTION
 // ==========================================
-window.userBaseMidiNote = parseInt(localStorage.getItem('userBaseMidiNote') || '60', 10);
-window.userMidiChannel = parseInt(localStorage.getItem('userMidiChannel') || '1', 10);
-
-// Global MIDI dispatcher (overrides specific ones if any)
-window.dispatchMIDI = function(eventType, noteNumber, velocity, noteFloat) {
-    if (window.oscStatus && window.oscStatus.linked && window.oscStatus.socket && window.oscStatus.socket.readyState === 1) {
-        window.oscStatus.socket.send(JSON.stringify({
-            type: "midi",
-            event: eventType,
-            channel: window.userMidiChannel,
-            note: noteNumber,
-            velocity: velocity,
-            noteFloat: noteFloat
-        }));
+if (typeof window !== 'undefined') {
+  const getStorageItem = (key, fallback) => {
+    try {
+      return (typeof localStorage !== 'undefined' && localStorage.getItem(key)) || fallback;
+    } catch {
+      return fallback;
     }
-};
+  };
+
+  window.userBaseMidiNote = parseInt(getStorageItem('userBaseMidiNote', '60'), 10);
+  window.userMidiChannel = parseInt(getStorageItem('userMidiChannel', '1'), 10);
+
+  // Global MIDI dispatcher (overrides specific ones if any)
+  window.dispatchMIDI = function(eventType, noteNumber, velocity, noteFloat) {
+      if (window.oscStatus && window.oscStatus.linked && window.oscStatus.socket && window.oscStatus.socket.readyState === 1) {
+          window.oscStatus.socket.send(JSON.stringify({
+              type: "midi",
+              event: eventType,
+              channel: window.userMidiChannel,
+              note: noteNumber,
+              velocity: velocity,
+              noteFloat: noteFloat
+          }));
+      }
+  };
+}
 
 // UI Injector
-document.addEventListener("DOMContentLoaded", () => {
-    const uiPanel = document.getElementById('ui-panel');
-    if (!uiPanel) return;
+if (typeof document !== 'undefined') {
+  document.addEventListener("DOMContentLoaded", () => {
+      const uiPanel = document.getElementById('ui-panel');
+      if (!uiPanel) return;
 
-    const midiConfigContainer = document.createElement('div');
-    midiConfigContainer.style.marginTop = '15px';
-    midiConfigContainer.style.paddingTop = '15px';
-    midiConfigContainer.style.borderTop = '1px solid rgba(255,255,255,0.2)';
-    midiConfigContainer.innerHTML = `
-        <div class="ui-title">Configuración MIDI (Salida)</div>
-        <div class="input-group" style="display: flex; gap: 10px; margin-bottom: 5px;">
-            <div style="flex: 1;">
-                <label style="font-size: 0.8rem; color: #ccc;">Canal MIDI</label>
-                <select id="global-midi-channel" style="width: 100%; padding: 4px; background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;">
-                    ${Array.from({length: 16}, (_, i) => '<option value="' + (i+1) + '">' + (i+1) + '</option>').join('')}
-                </select>
-            </div>
-            <div style="flex: 1;">
-                <label style="font-size: 0.8rem; color: #ccc;">Base Nota (Grado 0)</label>
-                <input type="number" id="global-midi-base" min="0" max="127" style="width: 100%; padding: 4px; background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;">
-            </div>
-        </div>
-        <div style="font-size: 0.75rem; color: #888;">
-            El Canal MIDI y la Nota Base determinan qué envía este teclado al Bridge / midiControl.
-        </div>
-    `;
-    
-    uiPanel.appendChild(midiConfigContainer);
+      const midiConfigContainer = document.createElement('div');
+      midiConfigContainer.style.marginTop = '15px';
+      midiConfigContainer.style.paddingTop = '15px';
+      midiConfigContainer.style.borderTop = '1px solid rgba(255,255,255,0.2)';
+      midiConfigContainer.innerHTML = `
+          <div class="ui-title">Configuración MIDI (Salida)</div>
+          <div class="input-group" style="display: flex; gap: 10px; margin-bottom: 5px;">
+              <div style="flex: 1;">
+                  <label style="font-size: 0.8rem; color: #ccc;">Canal MIDI</label>
+                  <select id="global-midi-channel" style="width: 100%; padding: 4px; background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;">
+                      ${Array.from({length: 16}, (_, i) => '<option value="' + (i+1) + '">' + (i+1) + '</option>').join('')}
+                  </select>
+              </div>
+              <div style="flex: 1;">
+                  <label style="font-size: 0.8rem; color: #ccc;">Base Nota (Grado 0)</label>
+                  <input type="number" id="global-midi-base" min="0" max="127" style="width: 100%; padding: 4px; background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;">
+              </div>
+          </div>
+          <div style="font-size: 0.75rem; color: #888;">
+              El Canal MIDI y la Nota Base determinan qué envía este teclado al Bridge / midiControl.
+          </div>
+      `;
+      
+      uiPanel.appendChild(midiConfigContainer);
 
-    const chSelect = document.getElementById('global-midi-channel');
-    const baseInput = document.getElementById('global-midi-base');
+      const chSelect = document.getElementById('global-midi-channel');
+      const baseInput = document.getElementById('global-midi-base');
 
-    chSelect.value = window.userMidiChannel;
-    baseInput.value = window.userBaseMidiNote;
+      chSelect.value = window.userMidiChannel;
+      baseInput.value = window.userBaseMidiNote;
 
-    chSelect.addEventListener('change', (e) => {
-        window.userMidiChannel = parseInt(e.target.value, 10);
-        localStorage.setItem('userMidiChannel', window.userMidiChannel);
-    });
+      chSelect.addEventListener('change', (e) => {
+          window.userMidiChannel = parseInt(e.target.value, 10);
+          localStorage.setItem('userMidiChannel', window.userMidiChannel);
+      });
 
-    baseInput.addEventListener('change', (e) => {
-        window.userBaseMidiNote = parseInt(e.target.value, 10);
-        localStorage.setItem('userBaseMidiNote', window.userBaseMidiNote);
-    });
-});
+      baseInput.addEventListener('change', (e) => {
+          window.userBaseMidiNote = parseInt(e.target.value, 10);
+          localStorage.setItem('userBaseMidiNote', window.userBaseMidiNote);
+      });
+  });
+}
