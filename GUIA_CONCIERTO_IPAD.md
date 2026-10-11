@@ -39,32 +39,36 @@ Esta guía explica paso a paso cómo conectar tu iPad a la Mac por cable USB par
 
 ---
 
-## Escenario 2: 100% Offline (Ni la Mac ni el iPad tienen Wi-Fi)
-*Este es el escenario "a prueba de balas" ideal para el día del concierto en vivo. No requiere configurar direcciones IP ni opciones de "Compartir Internet". Al conectar el cable USB, Apple crea una red privada e inquebrantable automáticamente (tecnología Bonjour).*
+## Escenario 2: 100% Offline (El Día del Concierto - Sin Internet ni Routers)
+*Este es el método infalible para cuando estás en una sala o teatro sin conexión a internet y querés latencia cero por cable USB sin interferencias.*
 
-### Paso 1: Apagar las radios (Cero interferencias)
-1. Conectá el iPad a la Mac con el cable USB-Lightning.
-2. En tu Mac, apagá el Wi-Fi desde el ícono de la barrita superior.
-3. En el iPad, abrí la app **Configuración** y apagá el Wi-Fi y el Bluetooth. 
-*(De esta forma bloqueás cualquier distracción inalámbrica. No van a saltar notificaciones raras ni va a haber caídas de señal).*
+### El Secreto Técnico (Importante entender esto):
+- Para estar "offline", tu Mac **NO necesita estar conectada a ningún router de Wi-Fi ni a internet**.
+- Sin embargo, el interruptor de Wi-Fi de la Mac debe permanecer **ENCENDIDO** (aunque no esté conectado a ninguna red) para que macOS mantenga activo el motor de red del cable USB (`192.168.2.1`). Si desactivás el Wi-Fi de la Mac por completo, macOS apaga el cable.
+- El iPad, en cambio, sí debe tener sus antenas totalmente apagadas para forzar el paso por el cable.
 
-### Paso 2: Iniciar los Servidores
-1. **Abrí la Terminal en la Mac**.
-2. **Arrancá el servidor de los teclados** copiando, pegando este comando y tocando Enter:
+### Paso 1: Configurar las conexiones
+1. Conectá el iPad a la Mac con el cable USB-Lightning original.
+2. **En tu Mac:** Asegurate de que "Compartir Internet" siga activo (como se configuró en el Escenario 1). El Wi-Fi de la Mac puede estar encendido pero **desconectado de cualquier red** (no hace falta internet).
+3. **En el iPad:** Abrí la app **Configuración** y **apagá el Wi-Fi y el Bluetooth**. (Esto garantiza que no haya interferencias y todo el tráfico vaya 100% por el cable físico).
+
+### Paso 2: Iniciar los Servidores en la Mac
+1. **Terminal Pestaña 1 (Teclados):**
    ```bash
    cd /Users/byron/Documents/tecladosXen/wilson-t41-hex-keyboard-main/hexgrid-workspace
    python3 -m http.server 8080
    ```
-3. **Arrancá la Estación MIDI**. Apretá `Cmd + T` para abrir otra pestaña en la terminal, pegá esto y tocá Enter:
+2. **Terminal Pestaña 2 (MidiControl):**
    ```bash
    cd /Users/byron/Documents/tecladosXen/midiControl
    npm start
    ```
 
-### Paso 3: Abrir las pantallas y arrancar el show
-1. **En la Mac:** Abrí Safari y escribí `http://localhost:3000` para tener tu monitor MIDI a la vista.
-2. **En el iPad:** Abrí Safari y escribí la "dirección mágica" de tu computadora por el puerto 8080:
-   
-   👉 **`http://Byrons-MacBook-Pro.local:8080`**
+### Paso 3: Abrir las pantallas
+1. **En la Mac:** Abrí Safari y entrá a:
+   👉 `http://localhost:3000` (Consola de Monitoreo).
+2. **En el iPad:** Abrí Safari y entrá **directamente por el número IP del cable** (no uses nombres .local):
+   👉 **`http://192.168.2.1:8080`**
 
-*(Al no haber Wi-Fi, la red privada del cable usará este nombre exacto para encontrar la Mac en fracciones de segundo. Elegí el teclado que vayas a usar, ¡y que empiece el concierto!)*
+*(Al usar `192.168.2.1`, el iPad no necesita internet ni servicios de búsqueda: se comunica directamente por el cable en fracciones de milisegundo. En el panel OSC del teclado, dejá el Target IP en `127.0.0.1` y ¡a tocar!)*
+
